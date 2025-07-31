@@ -1,0 +1,10 @@
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 3
+  clusterKeyPrefix: "cmdb-k8s-"
+
+cmdb:
+  apiUrl: "http://localhost:8000/api/v0.1"
+  apiKey: "f670e6bedce04546bb16e5e449e54149"
+  apiSecret: "U&*xkYl84t~0pz6@OR7E?FDBChL#AyPc"
