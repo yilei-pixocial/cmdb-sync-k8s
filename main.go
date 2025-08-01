@@ -105,6 +105,7 @@ func (s *SyncService) Stop() {
 func (s *SyncService) watchKeyEvents() {
 	defer s.wg.Done()
 
+	// 订阅redis中set事件
 	pattern := fmt.Sprintf("__key*@%d__:set", s.config.DB)
 	log.Printf("[Global] Starting key watcher with pattern: %s", pattern)
 
@@ -142,7 +143,6 @@ func (s *SyncService) watchKeyEvents() {
 				}
 			}
 
-			// 重连逻辑
 			retryCount++
 			if retryCount > maxRetries {
 				log.Printf("[Watcher] Max retries reached, giving up")
@@ -183,7 +183,7 @@ func (s *SyncService) handleKeyChange(key string) {
 	}
 
 	// 执行同步
-	if err := s.syncToOtherService(ctx, key, value); err != nil {
+	if err := s.syncToCMDB(ctx, key, value); err != nil {
 		log.Printf("[Sync] Error syncing key %s: %v", key, err)
 		s.metrics.errorCount++
 		return
@@ -238,8 +238,7 @@ type CIOperation struct {
 	Operation string         `json:"operation"` // "add", "update", "delete"
 }
 
-// syncToOtherService 同步到其他服务
-func (s *SyncService) syncToOtherService(ctx context.Context, key, value string) error {
+func (s *SyncService) syncToCMDB(ctx context.Context, key, value string) error {
 
 	cmdbURL := s.config.CmdbUrl
 	cmdbApiKey := s.config.CmdbApiKey
