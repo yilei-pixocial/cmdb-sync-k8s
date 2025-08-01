@@ -210,7 +210,7 @@ type Cluster struct {
 type Namespace struct {
 	NamespaceID string `json:"namespaceID"`
 	Name        string `json:"name"`
-	CreateTime  string `json:"createTime"`
+	CreatedTime string `json:"createdTime"`
 	ClusterID   string `json:"clusterID"`
 	ClusterName string `json:"clusterName"`
 	Status      string `json:"status"`
@@ -224,7 +224,7 @@ type service struct {
 	ClusterIP   string      `json:"clusterIP"`
 	ClusterID   string      `json:"clusterID"`
 	Ports       interface{} `json:"ports"`
-	CreateTime  string      `json:"createTime"`
+	CreatedTime string      `json:"createdTime"`
 	ClusterName string      `json:"clusterName"`
 	Selector    interface{} `json:"selector"`
 	Type        string      `json:"type"`
@@ -263,18 +263,45 @@ func (s *SyncService) syncToOtherService(ctx context.Context, key, value string)
 	var needAddData []CIOperation
 	var needDeleteData []CIOperation
 
-	// 构建旧数据的查找map（按CIType+CIKey）
 	oldDataMap := make(map[string]CIOperation)
 	for _, old := range clusterData {
 		key := old.CIType + ":" + old.CIKey
 		oldDataMap[key] = old
 	}
 
-	// 处理Namespace
+	key = "cluster:" + newClusterData.ClusterID
+	if old, exists := oldDataMap[key]; exists {
+		needUpdateData = append(needUpdateData, CIOperation{
+			CIType: "cluster",
+			CIKey:  newClusterData.ClusterID,
+			CIID:   old.CIID,
+			Attrs: map[string]any{
+				"ClusterId":       newClusterData.ClusterID,
+				"clusterName":     newClusterData.ClusterName,
+				"version":         newClusterData.K8sVersion,
+				"clusterRegionID": newClusterData.ClusterRegionID,
+			},
+			Operation: "update",
+		})
+		delete(oldDataMap, key) // 从map中移除，剩下的就是需要删除的
+	} else {
+		needAddData = append(needAddData, CIOperation{
+			CIType: "cluster",
+			CIKey:  newClusterData.ClusterID,
+			Attrs: map[string]any{
+				"ClusterId":       newClusterData.ClusterID,
+				"clusterName":     newClusterData.ClusterName,
+				"version":         newClusterData.K8sVersion,
+				"clusterRegionID": newClusterData.ClusterRegionID,
+			},
+			Operation: "add",
+		})
+	}
+
 	for _, namespace := range newClusterData.Namespace {
-		key := "namespace:" + namespace.NamespaceID
+		key = "namespace:" + namespace.NamespaceID
 		if old, exists := oldDataMap[key]; exists {
-			// 只要CIType和CIKey匹配就认为是需要更新（不比较属性内容）
+			// 只要CIType和CIKey匹配就认为是需要更新
 			needUpdateData = append(needUpdateData, CIOperation{
 				CIType: "namespace",
 				CIKey:  namespace.NamespaceID,
@@ -282,7 +309,7 @@ func (s *SyncService) syncToOtherService(ctx context.Context, key, value string)
 				Attrs: map[string]any{
 					"namespaceID":   namespace.NamespaceID,
 					"namespaceName": namespace.Name,
-					"createTimeStr": namespace.CreateTime,
+					"createTimeStr": namespace.CreatedTime,
 					"ClusterId":     namespace.ClusterID,
 					"clusterName":   namespace.ClusterName,
 					"status":        namespace.Status,
@@ -297,7 +324,7 @@ func (s *SyncService) syncToOtherService(ctx context.Context, key, value string)
 				Attrs: map[string]any{
 					"namespaceID":   namespace.NamespaceID,
 					"namespaceName": namespace.Name,
-					"createTimeStr": namespace.CreateTime,
+					"createTimeStr": namespace.CreatedTime,
 					"ClusterId":     namespace.ClusterID,
 					"clusterName":   namespace.ClusterName,
 					"status":        namespace.Status,
@@ -307,9 +334,8 @@ func (s *SyncService) syncToOtherService(ctx context.Context, key, value string)
 		}
 	}
 
-	// 处理Services（同样的逻辑）
 	for _, svc := range newClusterData.Services {
-		key := "service:" + svc.ServiceID
+		key = "service:" + svc.ServiceID
 		if old, exists := oldDataMap[key]; exists {
 			needUpdateData = append(needUpdateData, CIOperation{
 				CIType: "service",
@@ -326,7 +352,7 @@ func (s *SyncService) syncToOtherService(ctx context.Context, key, value string)
 					"clusterName":   svc.ClusterName,
 					"selector":      svc.Selector,
 					"type":          svc.Type,
-					"createTimeStr": svc.CreateTime,
+					"createTimeStr": svc.CreatedTime,
 				},
 				Operation: "update",
 			})
@@ -346,7 +372,7 @@ func (s *SyncService) syncToOtherService(ctx context.Context, key, value string)
 					"clusterName":   svc.ClusterName,
 					"selector":      svc.Selector,
 					"type":          svc.Type,
-					"createTimeStr": svc.CreateTime,
+					"createTimeStr": svc.CreatedTime,
 				},
 				Operation: "add",
 			})
@@ -363,27 +389,47 @@ func (s *SyncService) syncToOtherService(ctx context.Context, key, value string)
 		})
 	}
 
-	log.Printf("需要更新的数据: %v", needUpdateData)
-	log.Printf("需要添加的数据: %v", needAddData)
-	log.Printf("需要删除的数据: %v", needDeleteData)
-
 	log.Printf("开始同步集群数据: %s", newClusterData.ClusterID)
+
+	addCI(cmdbHelper, needAddData)
+	updateCI(cmdbHelper, needUpdateData)
+	deleteCI(cmdbHelper, needDeleteData)
 
 	// 记录同步日志
 	return nil
 }
 
-// uniqueField: 用于查询的唯一字段名
-// uniqueValue: 用于查询的唯一字段值
-// 返回值: 成功操作后的CI ID 和 错误
-func upsertCI(helper *cmdbsdk.Helper, modelName, uniqueField, uniqueValue string, attrs map[string]any) (int, error) {
-	addCIRes, err := helper.AddCI(modelName, cmdbsdk.ExistPolicyReplace, cmdbsdk.ExistPolicyReplace, attrs)
-	if err != nil {
-		log.Printf("  -> 新增资产失败: %v", err)
-		return 0, err
+func addCI(helper *cmdbsdk.Helper, ciOperations []CIOperation) {
+	for _, operation := range ciOperations {
+		_, err := helper.AddCI(operation.CIType, cmdbsdk.ExistPolicyReplace, cmdbsdk.ExistPolicyReplace, operation.Attrs)
+		if err != nil {
+			log.Printf("新增资产失败: %v", err)
+		} else {
+			log.Printf("新增 %s 成功, : %s", operation.CIType, operation.CIKey)
+		}
 	}
-	log.Printf("  -> 新增成功, CI_ID: %d", addCIRes.CIID)
-	return addCIRes.CIID, nil
+}
+
+func deleteCI(helper *cmdbsdk.Helper, ciOperations []CIOperation) {
+	for _, operation := range ciOperations {
+		_, err := helper.DeleteCI(int(operation.CIID))
+		if err != nil {
+			log.Printf("删除资产失败: %v", err)
+		} else {
+			log.Printf("删除 %s 成功, : %s", operation.CIType, operation.CIKey)
+		}
+	}
+}
+
+func updateCI(helper *cmdbsdk.Helper, ciOperations []CIOperation) {
+	for _, operation := range ciOperations {
+		_, err := helper.UpdateCI(int(operation.CIID), cmdbsdk.ExistPolicyReplace, cmdbsdk.ExistPolicyReplace, operation.Attrs)
+		if err != nil {
+			log.Printf("更新资产失败: %v", err)
+		} else {
+			log.Printf("更新 %s 成功, : %s", operation.CIType, operation.CIKey)
+		}
+	}
 }
 
 func getCIRes(helper *cmdbsdk.Helper) []CIOperation {
